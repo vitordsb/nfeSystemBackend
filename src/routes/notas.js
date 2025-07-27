@@ -20,25 +20,103 @@ function getNativeDb() {
   return conn.db;
 }
 
+// Helper para extrair chave da NFE do XML
+function extrairChaveNFe(infNFe) {
+  // A chave pode estar em infNFe.$.Id ou infNFe.id
+  const id = infNFe.$ ? infNFe.$.Id : infNFe.id;
+  if (id && id.startsWith('NFe')) {
+    return id.substring(3); // Remove 'NFe' do início
+  }
+  return id;
+}
+
 /**
  * POST /api/notas
  * - Recebe um XML (campo "xml")
- * - Faz upsert da Nota no MongoDB
+ * - Verifica duplicidade por número da NFE e chave
+ * - Faz insert da Nota no MongoDB
  * - Gera PDF e salva no GridFS
  */
 router.post("/", upload.single("xml"), async (req, res) => {
   try {
-    const xml = req.file.buffer.toString("utf-8");
-    const { nfeProc: { NFe: { infNFe } } } =
-      await parseStringPromise(xml, { explicitArray: false });
-    const numero = infNFe.ide.nNF;
+    if (!req.file) {
+      return res.status(400).json({ error: "Arquivo XML é obrigatório." });
+    }
 
-    // Prepara dados da nota
+    const xml = req.file.buffer.toString("utf-8");
+    const parsedXml = await parseStringPromise(xml, { explicitArray: false });
+    
+    // Verifica se o XML tem a estrutura esperada
+    if (!parsedXml.nfeProc || !parsedXml.nfeProc.NFe || !parsedXml.nfeProc.NFe.infNFe) {
+      return res.status(400).json({ error: "XML não possui estrutura válida de NFE." });
+    }
+
+    const { nfeProc: { NFe: { infNFe } } } = parsedXml;
+    const numero = infNFe.ide.nNF;
+    const chaveNFe = extrairChaveNFe(infNFe);
+
+    if (!numero || !chaveNFe) {
+      return res.status(400).json({ error: "Não foi possível extrair número ou chave da NFE do XML." });
+    }
+
+    // Verifica duplicidade por número da NFE
+    const notaExistentePorNumero = await Nota.findOne({ numero });
+    if (notaExistentePorNumero) {
+      return res.status(409).json({ 
+        error: `NFE com número ${numero} já foi importada.`,
+        notaExistente: {
+          id: notaExistentePorNumero._id,
+          numero: notaExistentePorNumero.numero,
+          chaveNFe: notaExistentePorNumero.chaveNFe,
+          criadoEm: notaExistentePorNumero.criadoEm
+        }
+      });
+    }
+
+    // Verifica duplicidade por chave da NFE
+    const notaExistentePorChave = await Nota.findOne({ chaveNFe });
+    if (notaExistentePorChave) {
+      return res.status(409).json({ 
+        error: `NFE com chave ${chaveNFe} já foi importada.`,
+        notaExistente: {
+          id: notaExistentePorChave._id,
+          numero: notaExistentePorChave.numero,
+          chaveNFe: notaExistentePorChave.chaveNFe,
+          criadoEm: notaExistentePorChave.criadoEm
+        }
+      });
+    }
+
+    // Prepara dados da nota com estrutura melhorada
     const notaData = {
       numero,
+      chaveNFe,
       dataEmissao: infNFe.ide.dhEmi,
-      remetente: infNFe.emit,
-      destinatario: infNFe.dest,
+      remetente: {
+        nome: infNFe.emit.xNome,
+        cnpj: infNFe.emit.CNPJ,
+        endereco: {
+          logradouro: infNFe.emit.enderEmit?.xLgr,
+          numero: infNFe.emit.enderEmit?.nro,
+          bairro: infNFe.emit.enderEmit?.xBairro,
+          municipio: infNFe.emit.enderEmit?.xMun,
+          uf: infNFe.emit.enderEmit?.UF,
+          cep: infNFe.emit.enderEmit?.CEP
+        }
+      },
+      destinatario: {
+        nome: infNFe.dest?.xNome,
+        cnpj: infNFe.dest?.CNPJ,
+        cpf: infNFe.dest?.CPF,
+        endereco: {
+          logradouro: infNFe.dest?.enderDest?.xLgr,
+          numero: infNFe.dest?.enderDest?.nro,
+          bairro: infNFe.dest?.enderDest?.xBairro,
+          municipio: infNFe.dest?.enderDest?.xMun,
+          uf: infNFe.dest?.enderDest?.UF,
+          cep: infNFe.dest?.enderDest?.CEP
+        }
+      },
       transportadora: infNFe.transp || null,
       produtos: Array.isArray(infNFe.det)
         ? infNFe.det.map(d => d.prod)
@@ -47,12 +125,9 @@ router.post("/", upload.single("xml"), async (req, res) => {
       xmlTexto: xml
     };
 
-    // Upsert da Nota
-    let nota = await Nota.findOneAndUpdate(
-      { numero },
-      notaData,
-      { new: true, upsert: true }
-    );
+    // Cria a nova nota
+    const nota = new Nota(notaData);
+    await nota.save();
 
     // Gera PDF e armazena no GridFS
     const db = getNativeDb();
@@ -70,26 +145,112 @@ router.post("/", upload.single("xml"), async (req, res) => {
 
     // Salva a referência no documento Nota
     nota.pdfFileId = fileId;
-    nota = await nota.save();
+    await nota.save();
 
-    res.json(nota);
+    res.status(201).json({
+      message: "NFE importada com sucesso!",
+      nota: {
+        id: nota._id,
+        numero: nota.numero,
+        chaveNFe: nota.chaveNFe,
+        valorTotal: nota.valorTotal,
+        remetente: nota.remetente.nome,
+        destinatario: nota.destinatario.nome,
+        criadoEm: nota.criadoEm
+      }
+    });
   } catch (err) {
     console.error("Erro ao processar XML/PDF:", err);
-    res.status(500).json({ error: err.message });
+    
+    // Tratamento de erros específicos
+    if (err.code === 11000) {
+      const campo = Object.keys(err.keyPattern)[0];
+      return res.status(409).json({ 
+        error: `Já existe uma NFE com este ${campo === 'numero' ? 'número' : 'chave'}.` 
+      });
+    }
+    
+    res.status(500).json({ error: "Erro interno do servidor: " + err.message });
   }
 });
 
 /**
  * GET /api/notas
- * - Lista todas as notas, ou filtra por ?numero=...
+ * - Lista todas as notas com busca avançada
+ * - Suporte a busca por: numero, remetente, destinatario, valorTotal
  */
 router.get("/", async (req, res) => {
   try {
-    const filter = req.query.numero ? { numero: req.query.numero } : {};
-    const notas = await Nota.find(filter).sort({ criadoEm: -1 });
-    res.json(notas);
+    const { busca, numero, valorMin, valorMax, page = 1, limit = 10 } = req.query;
+    let filter = {};
+
+    // Busca por número específico
+    if (numero) {
+      filter.numero = numero;
+    }
+
+    // Busca textual por remetente ou destinatário
+    if (busca) {
+      filter.$or = [
+        { "remetente.nome": { $regex: busca, $options: "i" } },
+        { "destinatario.nome": { $regex: busca, $options: "i" } },
+        { numero: { $regex: busca, $options: "i" } }
+      ];
+    }
+
+    // Filtro por faixa de valor
+    if (valorMin || valorMax) {
+      filter.valorTotal = {};
+      if (valorMin) filter.valorTotal.$gte = parseFloat(valorMin);
+      if (valorMax) filter.valorTotal.$lte = parseFloat(valorMax);
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    const [notas, total] = await Promise.all([
+      Nota.find(filter)
+        .select('numero chaveNFe dataEmissao remetente.nome destinatario.nome valorTotal criadoEm pdfFileId')
+        .sort({ criadoEm: -1 })
+        .skip(skip)
+        .limit(parseInt(limit)),
+      Nota.countDocuments(filter)
+    ]);
+
+    res.json({
+      notas,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / parseInt(limit)),
+        totalItems: total,
+        itemsPerPage: parseInt(limit)
+      }
+    });
   } catch (err) {
     console.error("Erro ao listar notas:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/notas/:id
+ * - Busca uma nota específica por ID
+ */
+router.get("/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "ID inválido." });
+    }
+
+    const nota = await Nota.findById(id);
+    if (!nota) {
+      return res.status(404).json({ error: "Nota não encontrada." });
+    }
+
+    res.json(nota);
+  } catch (err) {
+    console.error("Erro ao buscar nota:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -118,18 +279,35 @@ router.delete("/", async (req, res) => {
 router.delete("/:id", async (req, res) => {
   try {
     const { id } = req.params;
+    
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "ID inválido." });
+    }
+
     const nota = await Nota.findByIdAndDelete(id);
     if (!nota) {
       return res.status(404).json({ error: "Nota não encontrada." });
     }
 
+    // Remove o PDF do GridFS se existir
     if (nota.pdfFileId) {
       const db = getNativeDb();
       const bucket = new GridFSBucket(db, { bucketName: "pdfs" });
-      await bucket.delete(new ObjectId(nota.pdfFileId));
+      try {
+        await bucket.delete(new ObjectId(nota.pdfFileId));
+      } catch (gridError) {
+        console.warn("Erro ao deletar PDF do GridFS:", gridError);
+      }
     }
 
-    res.json({ message: `Nota ${id} excluída.` });
+    res.json({ 
+      message: `Nota ${nota.numero} excluída com sucesso.`,
+      notaExcluida: {
+        id: nota._id,
+        numero: nota.numero,
+        chaveNFe: nota.chaveNFe
+      }
+    });
   } catch (err) {
     console.error("Erro ao deletar nota:", err);
     res.status(500).json({ error: err.message });
@@ -137,4 +315,5 @@ router.delete("/:id", async (req, res) => {
 });
 
 export default router;
+
 
