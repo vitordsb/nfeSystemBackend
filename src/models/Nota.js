@@ -8,6 +8,8 @@ const NotaSchema = new mongoose.Schema({
   produtos: Array,
   valorTotal: Number,
   xmlTexto: String,
+  pdfData: { type: Buffer },           // ← raw PDF bytes
+  pdfContentType:{ type: String },     
   xmlPath: String,
   pdfUrl: String,
   criadoEm: { type: Date, default: Date.now }
