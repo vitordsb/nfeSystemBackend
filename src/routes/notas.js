@@ -70,11 +70,7 @@ router.post("/xmls", uploadXml, async (req, res) => {
         { new: true, upsert: true }
       );
       // se o numero do xml ja foi enviado antes, da um erro e diz que anota ja foi enviada
-
-      if (nota.numero === numero) {
-        return res.status(400).json({ error: `A nota ${numero} já foi enviada.` });
-      }
-
+      
       // Gera PDF
       const pdfStream = await gerarPDF(xmlText);
       const pdfName   = `pdf-${numero}.pdf`;
