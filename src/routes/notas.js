@@ -34,6 +34,9 @@ router.post("/xmls", uploadXml, async (req, res) => {
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: "Nenhum arquivo XML enviado." });
     }
+    if (req.files.length > 100) {
+      return res.status(400).json({ error: "Muitos arquivos XML enviados. Limite: 100." });
+    }
 
     const resultados = [];
 
@@ -66,6 +69,11 @@ router.post("/xmls", uploadXml, async (req, res) => {
         { $set: notaData },
         { new: true, upsert: true }
       );
+      // se o numero do xml ja foi enviado antes, da um erro e diz que anota ja foi enviada
+
+      if (nota.numero === numero) {
+        return res.status(400).json({ error: `A nota ${numero} já foi enviada.` });
+      }
 
       // Gera PDF
       const pdfStream = await gerarPDF(xmlText);
