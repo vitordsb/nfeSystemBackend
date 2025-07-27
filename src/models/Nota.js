@@ -24,9 +24,7 @@ const NotaSchema = new mongoose.Schema({
   criadoEm: { type: Date, default: Date.now }
 });
 
-// Índices para busca
-NotaSchema.index({ numero: 1 });
-NotaSchema.index({ chaveNFe: 1 });
+// Índices para busca (mantendo apenas os que não são 'unique: true')
 NotaSchema.index({ "remetente.nome": "text", "destinatario.nome": "text" });
 NotaSchema.index({ valorTotal: 1 });
 
