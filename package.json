@@ -1,0 +1,23 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "main": "db.js",
+  "type": "module",
+  "scripts": {
+    "build": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@alexssmusica/node-pdf-nfe": "^1.2.3",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "mongoose": "^8.16.5",
+    "multer": "^2.0.2",
+    "pdf-parse": "^1.1.1",
+    "xml2js": "^0.6.2"
+  }
+}
