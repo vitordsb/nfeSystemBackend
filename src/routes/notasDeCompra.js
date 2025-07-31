@@ -231,7 +231,7 @@ router.get("/:id", async (req, res) => {
 
 router.delete("/", async (req, res) => {
   try {
-    await Nota.deleteMany({});
+    await NotaCompra.deleteMany({});
     const db = getNativeDb();
     await db.collection("pdfs.files").deleteMany({});
     await db.collection("pdfs.chunks").deleteMany({});
